@@ -74,6 +74,8 @@ class InvestigationRunner:
                 error=None,
             )
 
+            await self._resolve_entities(seed, inv_type, merged, graph)
+
             await ws_manager.broadcast(investigation_id, {"type": "status", "status": "completed"})
 
         except Exception as e:
@@ -99,6 +101,18 @@ class InvestigationRunner:
             else:
                 merged[tool] = str(result)
         return merged
+
+    async def _resolve_entities(self, seed: str, inv_type: str, merged: dict, graph: dict) -> None:
+        try:
+            from ..graph.resolver import EntityResolver
+            from ..graph.risk import calculate_risk_score
+            risk_score = calculate_risk_score(seed, merged)
+            resolver = EntityResolver()
+            entities = await resolver.resolve_from_investigation(seed, inv_type, merged, risk_score)
+            if entities:
+                logger.info("Resolved %d entities from investigation", len(entities))
+        except Exception as e:
+            logger.error("Entity resolution failed: %s", e)
 
     async def _update_db(self, investigation_id: str, **kwargs) -> None:
         async with async_session() as db:

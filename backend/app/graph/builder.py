@@ -130,7 +130,27 @@ class GraphBuilder:
                         add_node(wid, url, "archive")
                         add_edge("seed", wid, "wayback_snapshot")
 
-        return {"nodes": nodes, "edges": edges}
+        from .risk import calculate_risk_score, get_risk_label, get_risk_signals
+
+        risk_score = calculate_risk_score(seed, tool_results)
+        risk_signals = get_risk_signals(tool_results)
+
+        stats = {
+            "total_nodes": len(nodes),
+            "total_edges": len(edges),
+            "risk_score": risk_score,
+            "risk_label": get_risk_label(risk_score),
+            "risk_signals": risk_signals,
+            "node_counts": self._count_by_type(nodes),
+        }
+        return {"nodes": nodes, "edges": edges, "stats": stats}
+
+    def _count_by_type(self, nodes: list[dict]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for n in nodes:
+            ntype = n.get("data", {}).get("type", "unknown")
+            counts[ntype] = counts.get(ntype, 0) + 1
+        return counts
 
     def _infer_type(self, seed: str) -> str:
         if "@" in seed:
