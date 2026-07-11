@@ -1,7 +1,3 @@
-import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
-from datetime import datetime, timezone
-
 from app.graph.resolver import EntityResolver
 from app.models.entity import PersonEntity
 
@@ -195,7 +191,6 @@ class TestMergeMetadata:
 
 class TestPersonEntityModel:
     def test_create_entity_defaults(self):
-        from app.db.base import Base
         entity = PersonEntity(
             primary_value="test@example.com",
             type="email",
@@ -228,3 +223,102 @@ class TestPersonEntityModel:
         entity = PersonEntity(primary_value="test@example.com", type="email", display_name="Test")
         assert entity.primary_value == "test@example.com"
         assert entity.type == "email"
+
+    def test_entity_optional_fields_none(self):
+        entity = PersonEntity(primary_value="test", type="email")
+        assert entity.risk_score is None or entity.risk_score == 0
+        assert entity.entity_metadata == {}
+
+
+
+
+class TestResolverEdgeCases:
+    def setup_method(self):
+        self.resolver = EntityResolver()
+
+    def test_extract_candidates_from_error_results(self):
+        results = {
+            "holehe": {"status": "error", "error": "timeout"},
+            "sherlock": {"status": "error", "error": "rate limited"},
+        }
+        candidates = self.resolver._extract_candidates("seed@example.com", "email", results)
+        assert ("seed@example.com", "email") in candidates
+        assert len(candidates) == 1
+
+    def test_extract_candidates_empty_results(self):
+        candidates = self.resolver._extract_candidates("seed", "username", {})
+        assert ("seed", "username") in candidates
+        assert len(candidates) == 1
+
+    def test_extract_candidates_partial_results(self):
+        results = {
+            "holehe": {"status": "success", "normalized": [{"service": "github"}]},
+        }
+        candidates = self.resolver._extract_candidates("seed@example.com", "email", results)
+        assert ("seed@example.com", "email") in candidates
+        assert len(candidates) == 1
+
+    def test_extract_mixed_case_email_dedup(self):
+        results = {
+            "emailfinder": {
+                "status": "success",
+                "normalized": [{"email": "User@Example.COM"}, {"email": "user@example.com"}],
+            }
+        }
+        candidates = self.resolver._extract_candidates("seed@example.com", "email", results)
+        emails = [v for v, t in candidates if t == "email" and v != "seed@example.com"]
+        assert len(emails) == 2
+
+    def test_extract_domain_from_emailfinder(self):
+        results = {
+            "emailfinder": {
+                "status": "success",
+                "normalized": [{"domain": "sub.example.com"}],
+            }
+        }
+        candidates = self.resolver._extract_candidates("seed", "email", results)
+        assert ("sub.example.com", "domain") in candidates
+
+    def test_build_metadata_no_results(self):
+        meta = self.resolver._build_metadata("test", "email", {})
+        assert meta["type"] == "email"
+        assert meta.get("services") == []
+        assert meta.get("breaches") == []
+
+    def test_build_metadata_duplicate_services(self):
+        results = {
+            "holehe": {
+                "status": "success",
+                "normalized": [
+                    {"service": "github", "exists": True},
+                    {"service": "github", "exists": True},
+                ],
+            }
+        }
+        meta = self.resolver._build_metadata("test@example.com", "email", results)
+        githubs = [s for s in meta["services"] if s.get("name") == "github"]
+        assert len(githubs) >= 1
+
+    def test_derive_display_name_from_services(self):
+        meta = {"services": [{"name": "twitter", "exists": True}], "type": "email"}
+        name = self.resolver._derive_display_name("test@example.com", meta)
+        assert name == ""
+
+    def test_build_domain_metadata(self):
+        results = {
+            "theHarvester": {
+                "status": "success",
+                "normalized": [
+                    {"value": "admin@example.com", "type": "email"},
+                    {"value": "sub.example.com", "type": "host"},
+                ],
+            }
+        }
+        meta = self.resolver._build_metadata("example.com", "domain", results)
+        assert "admin@example.com" in meta.get("emails", [])
+        assert meta["type"] == "domain"
+
+    def test_merge_results_with_different_format(self):
+        merged = self.resolver._merge_metadata({}, {})
+        assert merged.get("services") == []
+        assert merged.get("profiles") == []

@@ -144,3 +144,39 @@ class TestEntityAPI:
         async with AsyncClient(transport=transport, base_url="http://test") as client:
             resp = await client.get("/api/v1/entities/search?q=")
         assert resp.status_code == 422
+
+    async def test_get_entity_edges(self):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            list_resp = await client.get("/api/v1/entities")
+            entity_id = list_resp.json()["results"][0]["id"]
+
+            resp = await client.get(f"/api/v1/entities/{entity_id}/edges")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+
+    async def test_get_entity_edges_not_found(self):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/entities/nonexistent/edges")
+        assert resp.status_code == 200
+        assert resp.json() == []
+
+
+class TestDomainAPI(TestEntityAPI):
+    async def test_list_domains(self):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/entities/domains")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert isinstance(data, list)
+
+    async def test_list_domains_with_skip(self):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/entities/domains?skip=0&limit=5")
+        assert resp.status_code == 200
+        assert isinstance(resp.json(), list)
+
+    async def test_get_domain_by_id_not_found(self):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/api/v1/entities/domains/nonexistent")
+        assert resp.status_code == 404

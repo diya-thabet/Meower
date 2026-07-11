@@ -1,4 +1,3 @@
-import pytest
 from app.graph.risk import calculate_risk_score, get_risk_label, get_risk_signals
 
 

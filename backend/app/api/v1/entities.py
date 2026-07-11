@@ -10,8 +10,7 @@ from ...schemas.entity import (
 )
 from ...models.entity import PersonEntity, DomainEntity, EntityEdge
 from ...db.session import get_db
-from ...graph.resolver import EntityResolver
-from ...graph.risk import calculate_risk_score, get_risk_label
+from ...graph.risk import get_risk_label
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/entities", tags=["entities"])
@@ -87,6 +86,31 @@ async def search_entities(
     )
 
 
+@router.get("/domains", response_model=list[DomainSummary])
+async def list_domains(
+    skip: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(
+        select(DomainEntity).order_by(DomainEntity.risk_score.desc()).offset(skip).limit(limit)
+    )
+    domains = result.scalars().all()
+    return [DomainSummary(id=d.id, domain=d.domain, risk_score=d.risk_score) for d in domains]
+
+
+@router.get("/domains/{domain_id}", response_model=DomainResponse)
+async def get_domain(
+    domain_id: str,
+    db: AsyncSession = Depends(get_db),
+):
+    result = await db.execute(select(DomainEntity).where(DomainEntity.id == domain_id))
+    domain = result.scalar_one_or_none()
+    if not domain:
+        raise HTTPException(status_code=404, detail="Domain not found")
+    return domain
+
+
 @router.get("/{entity_id}", response_model=EntityResponse)
 async def get_entity(
     entity_id: str,
@@ -129,28 +153,3 @@ async def get_entity_edges(
     )
     edges = result.scalars().all()
     return edges
-
-
-@router.get("/domains", response_model=list[DomainSummary])
-async def list_domains(
-    skip: int = Query(0, ge=0),
-    limit: int = Query(20, ge=1, le=100),
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(
-        select(DomainEntity).order_by(DomainEntity.risk_score.desc()).offset(skip).limit(limit)
-    )
-    domains = result.scalars().all()
-    return [DomainSummary(id=d.id, domain=d.domain, risk_score=d.risk_score) for d in domains]
-
-
-@router.get("/domains/{domain_id}", response_model=DomainResponse)
-async def get_domain(
-    domain_id: str,
-    db: AsyncSession = Depends(get_db),
-):
-    result = await db.execute(select(DomainEntity).where(DomainEntity.id == domain_id))
-    domain = result.scalar_one_or_none()
-    if not domain:
-        raise HTTPException(status_code=404, detail="Domain not found")
-    return domain

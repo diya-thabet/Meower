@@ -54,15 +54,6 @@ class InvestigationRunner:
             graph_builder = GraphBuilder()
             graph = graph_builder.build(seed, merged)
 
-            report = None
-            if llm_service.available:
-                try:
-                    await ws_manager.broadcast(investigation_id, {"type": "status", "status": "generating_report"})
-                    report = await llm_service.generate_report(seed, merged)
-                except Exception as e:
-                    logger.error("Report generation failed: %s", e)
-                    report = f"[Report generation failed: {e}]"
-
             now = datetime.now(timezone.utc)
             await self._update_db(
                 investigation_id,
@@ -70,9 +61,26 @@ class InvestigationRunner:
                 completed_at=now,
                 tool_results=merged,
                 graph=graph,
-                report=report,
+                report=None,
                 error=None,
             )
+
+            report = None
+            if llm_service.available:
+                try:
+                    await ws_manager.broadcast(investigation_id, {"type": "status", "status": "generating_report"})
+                    report = await llm_service.generate_report({
+                        "seed": seed,
+                        "type": inv_type,
+                        "tool_results": merged,
+                        "graph": graph,
+                        "risk_signals": graph.get("stats", {}).get("risk_signals", []) if graph else [],
+                    })
+                except Exception as e:
+                    logger.error("Report generation failed: %s", e)
+                    report = f"[Report generation failed: {e}]"
+                if report:
+                    await self._update_db(investigation_id, report=report)
 
             await self._resolve_entities(investigation_id, seed, inv_type, merged, graph)
 

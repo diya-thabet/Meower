@@ -1,10 +1,24 @@
+import { useState } from 'react'
 import { useParams, Link } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { getInvestigation } from '../../services/api'
-import { ArrowLeft, Loader2 } from 'lucide-react'
+import { ArrowLeft, Loader2, BarChart3, Share2, FileText, Activity } from 'lucide-react'
+import { useWebSocket } from '../../hooks/useWebSocket'
+import { ProgressPanel } from '../ProgressPanel'
+import { GraphCanvas } from '../Graph/GraphCanvas'
+import { ReportViewer } from '../Report/ReportViewer'
+
+const tabs = [
+  { id: 'progress', label: 'Progress', icon: Activity },
+  { id: 'graph', label: 'Graph', icon: Share2 },
+  { id: 'report', label: 'Report', icon: FileText },
+  { id: 'data', label: 'Raw Data', icon: BarChart3 },
+]
 
 export function InvestigationDetail() {
   const { id } = useParams<{ id: string }>()
+  const [activeTab, setActiveTab] = useState('progress')
+
   const { data: inv, isLoading } = useQuery({
     queryKey: ['investigation', id],
     queryFn: () => getInvestigation(id!),
@@ -12,6 +26,10 @@ export function InvestigationDetail() {
     refetchInterval: (query) =>
       query.state.data?.status === 'running' || query.state.data?.status === 'pending' ? 2000 : false,
   })
+
+  const { messages, connected, status } = useWebSocket(
+    inv?.status === 'running' || inv?.status === 'pending' ? id : undefined
+  )
 
   if (isLoading) {
     return (
@@ -36,7 +54,7 @@ export function InvestigationDetail() {
     <div className="max-w-6xl mx-auto space-y-6">
       <Link
         to="/"
-        className="flex items-center gap-2 text-sm text-gray-400 hover:text-gray-200 transition-colors"
+        className="flex items-center gap-2 text-sm text-gray-400 hover:text-gray-200 transition-colors w-fit"
       >
         <ArrowLeft className="w-4 h-4" />
         Back
@@ -64,30 +82,88 @@ export function InvestigationDetail() {
         </span>
       </div>
 
-      {inv.status === 'pending' && (
-        <div className="bg-gray-900 rounded-xl border border-gray-800 p-8 text-center">
-          <Loader2 className="w-8 h-8 animate-spin mx-auto text-emerald-400" />
-          <p className="mt-3 text-gray-400">Investigation is queued...</p>
+      {inv.graph?.stats && (
+        <div className="grid grid-cols-5 gap-3">
+          <div className="bg-gray-900 rounded-lg p-3 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500">Nodes</p>
+            <p className="text-lg font-bold">{inv.graph.stats.total_nodes}</p>
+          </div>
+          <div className="bg-gray-900 rounded-lg p-3 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500">Edges</p>
+            <p className="text-lg font-bold">{inv.graph.stats.total_edges}</p>
+          </div>
+          <div className="bg-gray-900 rounded-lg p-3 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500">Risk Score</p>
+            <p className={`text-lg font-bold ${
+              (inv.graph.stats.risk_score || 0) >= 70 ? 'text-red-400' :
+              (inv.graph.stats.risk_score || 0) >= 40 ? 'text-orange-400' :
+              (inv.graph.stats.risk_score || 0) >= 20 ? 'text-yellow-400' :
+              'text-green-400'
+            }`}>{inv.graph.stats.risk_score}</p>
+          </div>
+          <div className="bg-gray-900 rounded-lg p-3 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500">Risk Label</p>
+            <p className={`text-lg font-bold ${
+              inv.graph.stats.risk_label === 'CRITICAL' ? 'text-red-400' :
+              inv.graph.stats.risk_label === 'HIGH' ? 'text-orange-400' :
+              inv.graph.stats.risk_label === 'MEDIUM' ? 'text-yellow-400' :
+              'text-green-400'
+            }`}>{inv.graph.stats.risk_label}</p>
+          </div>
+          <div className="bg-gray-900 rounded-lg p-3 border border-gray-800 text-center">
+            <p className="text-xs text-gray-500">Signals</p>
+            <p className="text-lg font-bold">{(inv.graph.stats.risk_signals || []).length}</p>
+          </div>
         </div>
       )}
 
-      {inv.tool_results && (
+      <div className="flex gap-1 border-b border-gray-800">
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setActiveTab(tab.id)}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${
+              activeTab === tab.id
+                ? 'border-emerald-400 text-emerald-400'
+                : 'border-transparent text-gray-500 hover:text-gray-300'
+            }`}
+          >
+            <tab.icon className="w-4 h-4" />
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {activeTab === 'progress' && (
+        <ProgressPanel messages={messages} connected={connected} status={status || inv.status} />
+      )}
+
+      {activeTab === 'graph' && inv.graph && (
+        <GraphCanvas data={inv.graph} />
+      )}
+      {activeTab === 'graph' && !inv.graph && (
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-8 text-center text-gray-500">
+          <Share2 className="w-8 h-8 mx-auto mb-2 opacity-50" />
+          <p>Graph not available</p>
+        </div>
+      )}
+
+      {activeTab === 'report' && (
+        <ReportViewer investigationId={id!} initialReport={inv.report} />
+      )}
+
+      {activeTab === 'data' && inv.tool_results && (
         <div className="bg-gray-900 rounded-xl border border-gray-800 p-6">
-          <h2 className="font-semibold mb-4">Tool Results</h2>
-          <pre className="text-xs text-gray-400 overflow-auto max-h-96">
+          <h2 className="font-semibold mb-4">Raw Tool Results</h2>
+          <pre className="text-xs text-gray-400 overflow-auto max-h-96 leading-relaxed">
             {JSON.stringify(inv.tool_results, null, 2)}
           </pre>
         </div>
       )}
-
-      {inv.report && (
-        <div className="bg-gray-900 rounded-xl border border-gray-800 p-6">
-          <h2 className="font-semibold mb-4">Report</h2>
-          <div className="prose prose-invert prose-sm max-w-none">
-            {inv.report.split('\n').map((line, i) => (
-              <p key={i}>{line}</p>
-            ))}
-          </div>
+      {activeTab === 'data' && !inv.tool_results && (
+        <div className="bg-gray-900 rounded-xl border border-gray-800 p-8 text-center text-gray-500">
+          <BarChart3 className="w-8 h-8 mx-auto mb-2 opacity-50" />
+          <p>No tool results yet</p>
         </div>
       )}
     </div>

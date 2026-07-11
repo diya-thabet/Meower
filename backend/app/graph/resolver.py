@@ -1,8 +1,7 @@
 import logging
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 from sqlalchemy import select
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..models.entity import PersonEntity, DomainEntity, EntityEdge
 from ..db.session import async_session

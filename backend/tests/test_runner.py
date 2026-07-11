@@ -126,4 +126,4 @@ class TestRunnerEdgeCases:
 
             await runner.run("inv-rep", "test", "email")
             assert "inv-rep" not in runner._running
-            mock_update.assert_awaited_once()
+            mock_update.assert_awaited()
