@@ -348,7 +348,9 @@ class TestShodanTool:
 class TestWaybackpyTool:
     @pytest.mark.anyio
     async def test_run_uses_library(self):
-        tool = WaybackpyTool()
+        import sys
+
+        fake_wp = MagicMock()
         mock_oldest = MagicMock()
         mock_oldest.__str__ = MagicMock(return_value="2000-01-01")
         mock_newest = MagicMock()
@@ -357,18 +359,30 @@ class TestWaybackpyTool:
         mock_url = MagicMock()
         mock_url.oldest = MagicMock(return_value=mock_oldest)
         mock_url.newest = MagicMock(return_value=mock_newest)
+        fake_wp.Url = MagicMock(return_value=mock_url)
+        sys.modules["waybackpy"] = fake_wp
 
-        with patch("waybackpy.Url", return_value=mock_url):
-            result = await tool.run("example.com")
+        tool = WaybackpyTool()
+        result = await tool.run("example.com")
+
+        sys.modules.pop("waybackpy", None)
         assert result.status == "success"
         assert len(result.normalized) == 1
 
     @pytest.mark.anyio
     async def test_run_missing_library(self):
+        import sys
+
+        fake_wp = MagicMock()
+        fake_wp.Url = MagicMock(side_effect=ImportError("No module named 'waybackpy'"))
+        sys.modules["waybackpy"] = fake_wp
+
         tool = WaybackpyTool()
-        with patch("waybackpy.Url", side_effect=ImportError):
-            result = await tool.run("example.com")
+        result = await tool.run("example.com")
+
+        sys.modules.pop("waybackpy", None)
         assert result.status == "error"
+        assert "not installed" in (result.error or "")
 
     @pytest.mark.anyio
     async def test_name_and_category(self):
