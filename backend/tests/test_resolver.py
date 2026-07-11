@@ -208,21 +208,21 @@ class TestPersonEntityModel:
         assert entity.type == "email"
         assert entity.risk_score == 50
         assert entity.investigation_count == 1
-        assert entity.metadata is None
+        assert entity.entity_metadata == {}
 
     def test_create_entity_with_metadata(self):
         entity = PersonEntity(
             primary_value="test@example.com",
             type="email",
-            metadata={"services": [{"name": "github"}], "breaches": []},
+            entity_metadata={"services": [{"name": "github"}], "breaches": []},
         )
-        assert entity.metadata["services"][0]["name"] == "github"
-        assert entity.metadata["breaches"] == []
+        assert entity.entity_metadata["services"][0]["name"] == "github"
+        assert entity.entity_metadata["breaches"] == []
 
     def test_entity_id_is_uuid(self):
         import uuid
         entity = PersonEntity(primary_value="test", type="username")
-        assert uuid.UUID(entity.id)
+        assert uuid.UUID(entity.id) is not None
 
     def test_entity_str_repr(self):
         entity = PersonEntity(primary_value="test@example.com", type="email", display_name="Test")
