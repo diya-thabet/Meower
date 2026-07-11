@@ -37,10 +37,11 @@ jobs:
         run: |
           source .venv/bin/activate
           pip install ruff
-          ruff check app/ --ignore=E402,F821
+          ruff check app/ tests/
 
       - name: Run tests
         run: |
+          mkdir -p data
           source .venv/bin/activate
           pytest tests/ -v --tb=short
 
