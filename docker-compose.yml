@@ -1,0 +1,17 @@
+services:
+  meower:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/meower.db
+      - SECRET_KEY=change-me-in-production
+      - LOG_LEVEL=INFO
+      - FRONTEND_DIR=/app/frontend/dist
+      - FANAR_API_KEY=${FANAR_API_KEY:-}
+      - FANAR_MODEL=Fanar-C-2-27B
+    volumes:
+      - meower_data:/app/data
+
+volumes:
+  meower_data:
