@@ -20,32 +20,34 @@ User (Browser)
 │                                                      │
 │  ┌─────────────┐  ┌──────────────┐  ┌────────────┐  │
 │  │  API Layer   │  │  Auth/AuthZ  │  │  WS Stream │  │
-│  │  (api/v1/)   │  │  (core/)     │  │  (future)  │  │
-│  └──────┬───────┘  └──────────────┘  └────────────┘  │
-│         │                                             │
-│  ┌──────▼─────────────────────────────────────────┐  │
-│  │           Orchestration Layer                    │  │
-│  │  (orchestration/pipeline.py + dispatcher.py)    │  │
-│  │  Builds DAG → runs tools in order → merges      │  │
-│  └──────┬──────────┬──────────┬──────────┬────────┘  │
-│         │          │          │          │           │
+│  │  (api/v1/)   │  │  (core/)     │  │  (active)  │  │
+│  └──────┬───────┘  └──────────────┘  └──────┬─────┘  │
+│         │                                    │       │
+│  ┌──────▼─────────────────────┐  ┌───────────▼────┐  │
+│  │   Orchestration Layer      │  │  WS Manager     │  │
+│  │  (orchestration/)          │  │  (ws/manager)   │  │
+│  │  Pipeline → Dispatcher →  │  │  Broadcast by   │  │
+│  │  Runner                    │  │  investigation  │  │
+│  └──────┬──────────┬─────────┘  └─────────────────┘  │
+│         │          │                                   │
 │  ┌──────▼──┐ ┌────▼──┐ ┌────▼──┐ ┌────▼──┐        │
 │  │  Email   │ │Username│ │ Social │ │ Domain │        │
 │  │  Tools   │ │ Tools  │ │ Tools  │ │ Tools  │        │
 │  │  (5)     │ │ (3)    │ │ (3)    │ │ (4)    │        │
 │  └─────────┘ └────────┘ └────────┘ └────────┘        │
 │         │                                             │
-│  ┌──────▼─────────────────────────────────────────┐  │
-│  │              LLM Service (Fanar)                │  │
-│  │  app/llm/service.py + prompts.py               │  │
-│  │  OpenAI SDK → api.fanar.qa/v1                  │  │
-│  └──────────────┬──────────────────────────────────┘  │
-│                 │                                     │
-│  ┌──────────────▼──────────────────────────────────┐  │
-│  │           Data Layer                             │  │
-│  │  SQLAlchemy (async) + SQLite                    │  │
-│  │  Models: Investigation, Person (future)         │  │
-│  └─────────────────────────────────────────────────┘  │
+│  ┌──────▼──────────┐  ┌───────────────┐            │
+│  │  Graph Builder   │  │  LLM Service  │            │
+│  │  (graph/)        │  │  (Fanar)      │            │
+│  │  Entity extract  │  │  Report gen   │            │
+│  │  Node/edge JSON  │  │  Summaries    │            │
+│  └──────┬──────────┘  └──────┬────────┘            │
+│         │                    │                       │
+│  ┌──────▼────────────────────▼──────────────────┐  │
+│  │           Data Layer                          │  │
+│  │  SQLAlchemy (async) + SQLite                 │  │
+│  │  Models: Investigation                        │  │
+│  └───────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -59,23 +61,75 @@ FastAPI route handlers organized by resource:
 
 | File | Endpoints | Purpose |
 |------|-----------|---------|
-| `investigations.py` | `POST /investigations`, `GET /investigations`, `GET /investigations/{id}`, `DELETE /investigations/{id}` | CRUD for investigations |
+| `investigations.py` | `POST /investigations`, `GET /investigations`, `GET /investigations/{id}`, `DELETE /investigations/{id}` | CRUD for investigations; auto-triggers runner on POST |
+| `investigations.py` | `WS /investigations/ws/{id}` | WebSocket for real-time progress streaming |
 | `tools.py` | `GET /tools`, `GET /tools/categories` | List available OSINT tools and categories |
 | `reports.py` | `POST /reports/generate/{id}`, `GET /reports/status` | Trigger LLM report generation, check LLM availability |
 
 All routes are prefixed with `/api/v1` via the router aggregator.
 
-### 2. Orchestration Layer (`backend/app/orchestration/`)
+### 2. WebSocket Manager (`backend/app/ws/manager.py`)
+
+In-memory connection manager for real-time investigation progress:
+
+```python
+class WebSocketManager:
+    async def connect(investigation_id, ws)   # Accept WS, track connection
+    def disconnect(investigation_id, ws)       # Remove stale connections
+    async def broadcast(investigation_id, msg) # JSON-serialized to all listeners
+```
+
+- Auto-cleans stale connections on send failure
+- Each investigation has its own set of listeners
+- Messages: `{"type": "status"|"tool_progress", "status": "...", "tool": "..."}`
+
+### 3. Orchestration Layer (`backend/app/orchestration/`)
 
 **Pipeline (`pipeline.py`):**
 - Creates an execution plan (DAG) based on seed type
-- Example: email seed → holehe → ghunt → h8mail → theHarvester → (extract usernames) → sherlock → maigret → instagram
+- Email: holehe → ghunt → h8mail → theHarvester → (extract usernames) → sherlock → maigret
+- Username: sherlock → maigret → socid_extractor → instaloader → snscrape (twitter) → snscrape (reddit)
+- Domain: theHarvester → emailfinder → censys → shodan → waybackpy
 
 **Dispatcher (`dispatcher.py`):**
 - Runs tool adapters in parallel respecting dependencies
-- Streams progress updates via WebSocket (future)
+- Handles async and sync progress callbacks
+- Per-tool timeout (60s default via `run_cli`)
+- Tracks stalled pipelines (dependencies never met)
 
-### 3. Tool Adapters (`backend/app/tools/`)
+**Runner (`runner.py`):**
+- `InvestigationRunner.run()` — full lifecycle manager
+- Creates own DB session via `async_session()` for background execution
+- Merge all tool results into a single dict
+- Invoke graph builder → Invoke LLM report (if configured) → Save to DB
+- Auto-triggered via `asyncio.ensure_future` on `POST /investigations`
+- Dedup protection: skips if investigation_id already running
+- Graceful error handling: per-tool errors don't crash the whole investigation
+
+### 4. Graph Builder (`backend/app/graph/builder.py`)
+
+Extracts entities from tool results and builds a Cytoscape.js-compatible graph:
+
+**Entity extraction per tool:**
+| Tool | Node Type | Edge Label |
+|------|-----------|------------|
+| holehe | `service` | `registered_on` |
+| ghunt | `person` | `google_account` |
+| h8mail | `breach` | `found_in_breach` |
+| emailfinder | `email` | `associated_email` |
+| theHarvester | `email`, `domain`, `ip` | `found_email`, `host`, `resolves_to` |
+| sherlock/maigret | `social` | `found_on_{site}` |
+| instaloader | `social` | `instagram_profile` |
+| snscrape | `social` | `content_on_{platform}` |
+| censys/shodan | `service` | `discovered_by_{tool}` |
+| waybackpy | `archive` | `wayback_snapshot` |
+
+**Helper functions:**
+- `extract_usernames(results)` — deduplicated list from all tool outputs
+- `extract_emails(results)` — deduplicated list including `value` field checks
+- `extract_domains(results)` — deduplicated list excluding IP addresses
+
+### 5. Tool Adapters (`backend/app/tools/`)
 
 Each adapter wraps a CLI tool or Python library. All implement `BaseTool`:
 
@@ -122,7 +176,7 @@ class ToolResult:
 | Domain | `shodan` | CLI subprocess | domain | IoT devices, services, vulns |
 | Domain | `waybackpy` | Python lib | url | Historical snapshots, hidden endpoints |
 
-### 4. LLM Service (`backend/app/llm/`)
+### 6. LLM Service (`backend/app/llm/`)
 
 Uses the OpenAI Python SDK pointed at Fanar's API:
 
@@ -144,7 +198,7 @@ client = OpenAI(
 3. Social profile analysis
 4. Data breach analysis
 
-### 5. Data Layer (`backend/app/db/`)
+### 7. Data Layer (`backend/app/db/`)
 
 | File | Purpose |
 |------|---------|
@@ -166,7 +220,7 @@ class Investigation(Base):
     error: str?                # Error message if failed
 ```
 
-### 6. Frontend (`frontend/src/`)
+### 8. Frontend (`frontend/src/`)
 
 | Directory | Purpose |
 |-----------|---------|
@@ -187,8 +241,11 @@ class Investigation(Base):
 1. User enters "john@example.com" → selects "Email" type
 2. Frontend → POST /api/v1/investigations {seed, type}
 3. Backend → creates Investigation (status: "pending") → returns {id}
-4. Frontend → opens WebSocket /ws/{id} (future)
-5. Orchestrator → builds execution DAG:
+4. Backend → asyncio.ensure_future(runner.run(id, seed, type))
+5. Frontend → opens WebSocket /api/v1/investigations/ws/{id}
+6. Runner → updates status to "running" → broadcasts via WS
+
+7. Orchestrator → builds execution DAG:
 
    john@example.com
    ├── holehe       ─── services found
@@ -205,15 +262,16 @@ class Investigation(Base):
    ├── (extract usernames from emails)
    │   ├── sherlock  ─── social accounts
    │   ├── maigret   ─── deep search
-   │   ├── instaloader ─── instagram
-   │   └── facebook_scraper ─── facebook
+   │   └── instaloader ─── instagram
 
-6. Each tool runs via asyncio.create_subprocess_exec (parallel where possible)
-7. Results merged → Investigation.tool_results = {...}
-8. Graph builder → creates node/edge JSON → Investigation.graph = {...}
-9. LLM service → generates report → Investigation.report = "..."
-10. Investigation.status = "completed"
-11. Frontend → displays results, graph, report
+8. Each tool runs via asyncio.create_subprocess_exec (parallel where possible)
+9. WS broadcasts: {"type": "tool_progress", "tool": "holehe", "status": "running"}
+10. Results merged → tool_results dict
+11. Graph builder → creates node/edge JSON → graph dict
+12. LLM service → generates report (if FANAR_API_KEY set)
+13. WS broadcasts: {"type": "status", "status": "completed"}
+14. Investigation.status = "completed"
+15. Frontend → polls/ws → receives completion → fetches investigation detail
 ```
 
 ---
@@ -267,25 +325,35 @@ SQLite is file-based, requires zero configuration, and lives inside the containe
 ### Why Fanar instead of OpenAI?
 User's explicit choice. Fanar is hosted in Qatar, OpenAI-compatible, with 50 req/min rate limit. The OpenAI SDK is reused with a different `base_url`.
 
+### Why ensure_future for investigation runner?
+The `POST /investigations` endpoint creates the DB record and returns immediately. The investigation runs as a background task via `asyncio.ensure_future`. The runner creates its own DB session to avoid request-scoped session issues. The WebSocket provides real-time progress.
+
 ---
 
 ## Testing Strategy
 
 ```
 tests/
-├── conftest.py           # anyio_backend = "asyncio"
-├── test_api.py           # 8 tests: CRUD investigations, tools list, health
-├── test_llm.py           # 4 tests: mock report gen, context building, no-key error
-└── test_tools/           # Tool adapter tests (one per adapter)
-    ├── __init__.py
+├── conftest.py                 # anyio_backend = "asyncio"
+├── test_api.py                 # 8 tests: CRUD investigations, tools, health
+├── test_llm.py                 # 4 tests: mock report gen, context building, no-key error
+├── test_graph.py               # 26 tests: entity extraction, edge cases, helpers
+├── test_ws.py                  # 11 tests: WS connect/disconnect/broadcast edge cases
+├── test_runner.py              # 11 tests: merge, dedup, error handling, cleanup
+├── test_orchestration.py       # 10 tests: pipeline builder, dispatcher DAG
+└── test_tools/                 # 43 tests: runner + adapters per tool
+    ├── test_runner.py
     ├── test_holehe.py
     ├── test_sherlock.py
     └── ...
 ```
 
+**Total: 113 tests**
+
 **Principles:**
 - Tool adapters mock subprocess calls via `asyncio.create_subprocess_exec` → `AsyncMock`
-- API tests use `httpx.AsyncClient` with `ASGITransport`
+- API tests use `httpx.AsyncClient` with `ASGITransport`; runner mocked for speed
+- Graph/WS/Runner tests are pure unit tests with minimal mocking
 - DB tests use per-fixture table creation/drop
 - LLM tests mock `OpenAI.chat.completions.create`
 
@@ -293,8 +361,8 @@ tests/
 
 ## Future Architecture
 
-1. **WebSocket streaming** — Real-time progress as tools execute
-2. **Celery workers** — Heavy investigations without blocking
-3. **Person model** — Entity extraction + graph database (future)
-4. **Export plugins** — PDF (WeasyPrint), CSV, STIX/TAXII
-5. **Plugin system** — Community tool adapters via Python entrypoints
+1. **Person model** — Cross-investigation entity resolution (same email across investigations)
+2. **Celery workers** — Heavy investigations without blocking the event loop
+3. **Export plugins** — PDF (WeasyPrint), CSV, STIX/TAXII
+4. **Plugin system** — Community tool adapters via Python entrypoints
+5. **Compiled report caching** — LLM report results cached to avoid re-generation

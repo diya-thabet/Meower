@@ -52,6 +52,17 @@ Config defaulted to `sqlite+aiosqlite:///./data/meower.db` but `data/` directory
 ### Mistake: Test for `test_llm_service_available` used wrong assertion
 Used `assert "Mock report content" in result` but `generate_report` returned a coroutine. After fixing to async/await, the test worked by using `AsyncMock` for `_call`.
 
+### Mistake: Dispatcher progress_callback not handling async callbacks
+The dispatcher progress callback was `Callable[[str, str], None]` but the runner passed an `async def` function. The callback was called without `await`, producing `RuntimeWarning: coroutine was never awaited`. Fixed by:
+1. Updating callback type to `Callable[[str, str], None | Awaitable[None]]`
+2. Adding `_notify()` helper that checks `iscoroutinefunction` and awaits if needed
+
+### Mistake: Background runner using request-scoped DB session
+The investigation runner was called via `asyncio.ensure_future` and received the request-scoped `db` session from FastAPI's dependency injection. When the request completed, the session was closed and the background task crashed. Fixed by having the runner create its own session via `async_session()` context manager inside `_update_db()`.
+
+### Mistake: GraphBuilder IP addresses treated as domains
+The `extract_domains` helper treated any value with a "." as a domain, which included IP addresses like "192.168.1.1". Fixed by adding `_RE_IP` regex check to filter out IPs.
+
 ---
 
 ## 2. Architecture Decisions
@@ -69,10 +80,16 @@ meower/
 │   │   ├── schemas/        # Pydantic schemas
 │   │   ├── tools/          # Tool adapters (BaseTool + each tool)
 │   │   ├── llm/            # Fanar LLM service
-│   │   ├── orchestration/  # Pipeline + dispatcher
+│   │   ├── orchestration/  # Pipeline + dispatcher + runner
 │   │   ├── graph/          # Relationship graph builder
+│   │   ├── ws/             # WebSocket manager
 │   │   └── db/             # Session, base
 │   ├── tests/
+│   │   ├── test_graph.py   # 26 tests
+│   │   ├── test_ws.py      # 11 tests
+│   │   ├── test_runner.py  # 11 tests
+│   │   ├── test_orchestration.py  # 10 tests
+│   │   └── test_tools/     # 43 tests
 │   └── requirements.txt
 └── frontend/
     └── src/
@@ -102,16 +119,25 @@ class BaseTool(ABC):
 - Default model: `Fanar-C-2-27B`
 - Key set via `FANAR_API_KEY` env var
 - No key → LLM endpoints return 400 with clear message
+- LLM availability check: `llm_service.available` property (not `is_configured()`)
 - Rate limit: 50 req/min for most models
 
 ### Investigation Flow
 1. User enters seed (email/username/domain) → `POST /api/v1/investigations`
 2. API creates `Investigation` record (status: "pending")
-3. Frontend polls via WebSocket or GET endpoint
-4. Orchestrator builds execution DAG based on seed type
-5. Tools run in parallel where dependencies allow
-6. Results merged → graph built → LLM report generated
-7. Investigation marked "completed"
+3. API spawns background runner via `asyncio.ensure_future`
+4. Frontend opens WebSocket `/api/v1/investigations/ws/{id}` for real-time progress
+5. Orchestrator builds execution DAG based on seed type
+6. Tools run in parallel where dependencies allow (WS broadcasts per-tool progress)
+7. Results merged → graph built → LLM report generated
+8. Investigation marked "completed" or "failed"
+
+### WebSocket Protocol
+Messages are JSON-serialized:
+```json
+{"type": "status", "status": "running|completed|failed|generating_report", "error": "..."}
+{"type": "tool_progress", "tool": "holehe", "status": "running|success|error"}
+```
 
 ---
 
@@ -152,35 +178,45 @@ cd backend && python3 scripts/check_tools.py
 1. **SQLite path:** The `data/` directory must exist relative to where `uvicorn` runs. Default is `./data/meower.db`.
 2. **Frontend proxy:** In dev mode, Vite proxies `/api/*` to `localhost:8000`. The catch-all route in `main.py` serves frontend for non-API paths.
 3. **Tool CLI dependencies:** Tool adapters assume the CLI binaries are in `$PATH`. The Dockerfile or user must install them.
-4. **Fanar API key:** Without this, `/api/v1/reports/generate/*` returns 400. The `/api/v1/reports/status` endpoint shows availability.
-5. **Test isolation:** Tests create/drop tables via the fixture in `conftest.py`. The DB file must exist at the configured path.
+4. **Fanar API key:** Without this, `/api/v1/reports/generate/*` returns 400. The `/api/v1/reports/status` endpoint shows availability. Check `llm_service.available` (not `is_configured()`).
+5. **Test isolation:** Tests create/drop tables via the fixture. Use `mock_runner` fixture in API tests to avoid background execution.
 6. **Async everything:** All subprocess calls in tool adapters MUST use `asyncio.create_subprocess_exec`, not `subprocess.run`.
+7. **Background task DB sessions:** The investigation runner creates its own session via `async_session()`. Never pass the request-scoped `db` dependency to `asyncio.ensure_future` tasks.
+8. **Progress callback type:** The dispatcher's callback type is `Callable[[str, str], None | Awaitable[None]]`. It handles both sync and async callbacks.
+9. **GraphBuilder IP filtering:** The `extract_domains` helper uses `_RE_IP` regex to exclude IP addresses from domain extraction.
+10. **Investigation type validation:** Invalid `type` values immediately fail the investigation (status: "failed") rather than silently falling back to EMAIL.
+11. **WebSocket path:** The WS endpoint is at `/api/v1/investigations/ws/{id}`. The catch-all route in `main.py` returns 404 for paths starting with `ws/` to avoid interfering with WebSocket upgrade requests.
 
 ## 6. What's Built vs What's Planned
 
-### ✅ Built (Phase 1 & partial Phase 2)
+### ✅ Built (Phases 1-3)
 - [x] FastAPI skeleton with all route handlers
 - [x] SQLAlchemy models + async session
 - [x] React frontend (Dashboard, New Investigation, Detail)
 - [x] Fanar LLM service with report generation
 - [x] Tool adapter base class + registry
+- [x] 15 tool adapters (holehe, ghunt, h8mail, emailfinder, theHarvester, sherlock, maigret, socid_extractor, instaloader, facebook_scraper, snscrape, censys, shodan, waybackpy)
+- [x] Orchestrator pipeline builder (DAG per seed type)
+- [x] Dispatcher with parallel execution, dependency awareness, timeout
+- [x] Graph builder (entity extraction + node/edge JSON for Cytoscape.js)
+- [x] Investigation runner (full lifecycle: pipeline → dispatch → merge → graph → report)
+- [x] WebSocket manager with real-time progress streaming
+- [x] Background investigation execution via `asyncio.ensure_future`
 - [x] Docker multi-stage build
 - [x] GitHub Actions CI
-- [x] 12 passing tests
+- [x] **113 passing tests**
 
-### 🚧 In Progress (Phase 2)
-- [ ] Tool adapters for each OSINT tool
-- [ ] Orchestrator pipeline (DAG execution)
-- [ ] Graph builder
-- [ ] Integration tests for tool outputs
+### 🚧 In Progress / Stalled
+- (none)
 
-### 📅 Planned (Phases 3-7)
-- [ ] WebSocket streaming for real-time progress
-- [ ] Person graph + relationship tree
+### 📅 Planned (Phases 4-7)
+- [ ] Person model — cross-investigation entity resolution
 - [ ] LLM prompt templates refinement
 - [ ] PDF/JSON export
-- [ ] Auth (JWT)
+- [ ] Auth (JWT) refinement
+- [ ] Frontend graph visualization (Cytoscape.js)
 - [ ] Celery for heavy investigations
+- [ ] Plugin system for community tool adapters
 
 ## 7. Decision Log
 
@@ -193,6 +229,12 @@ cd backend && python3 scripts/check_tools.py
 | Phase 1 | OpenAI SDK with custom base_url for Fanar | Fanar is OpenAI-compatible, no extra SDK needed |
 | Phase 2 | CLI subprocess per tool adapter | Tools already installed; no need to reimplement |
 | Phase 2 | `normalized` field in ToolResult | Separates raw CLI output from structured data |
+| Phase 3 | Background runner with own DB session | Avoids request-scoped session lifespan issues |
+| Phase 3 | `ensure_future` instead of task queue | Simple, no external deps; adequate for single-user |
+| Phase 3 | WebSocket for progress instead of polling | Real-time, reduces API load |
+| Phase 3 | GraphBuilder dedup by node ID | Prevents duplicate entities from different tools |
+| Phase 3 | Invalid type → immediate failure | Predictable behavior, easier debugging |
+| Phase 3 | In-memory WS manager (no Redis) | Single container, no external pub/sub needed |
 
 ---
 

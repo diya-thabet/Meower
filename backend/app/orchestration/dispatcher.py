@@ -1,13 +1,14 @@
 import asyncio
 import logging
-from typing import Optional, Callable
+from inspect import iscoroutinefunction
+from typing import Optional, Callable, Awaitable
 from .pipeline import PipelinePlan, PipelineStep
 from ..tools import get_tool
 from ..tools.base import ToolResult
 
 logger = logging.getLogger(__name__)
 
-ProgressCallback = Optional[Callable[[str, str], None]]
+ProgressCallback = Optional[Callable[[str, str], None | Awaitable[None]]]
 
 
 class Dispatcher:
@@ -58,12 +59,14 @@ class Dispatcher:
                 error=f"Tool '{step.tool}' not found in registry",
             )
 
-        if self.progress_callback:
-            self.progress_callback(step.tool, "running")
-
+        await self._notify(step.tool, "running")
         result = await tool.run(step.target, **step.kwargs)
-
-        if self.progress_callback:
-            self.progress_callback(step.tool, result.status)
-
+        await self._notify(step.tool, result.status)
         return result
+
+    async def _notify(self, tool: str, status: str) -> None:
+        if self.progress_callback is None:
+            return
+        result = self.progress_callback(tool, status)
+        if result is not None and iscoroutinefunction(self.progress_callback):
+            await result

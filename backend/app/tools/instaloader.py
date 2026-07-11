@@ -1,7 +1,6 @@
 import re
-import json
 from .base import BaseTool, ToolResult, ToolCategory
-from ._runner import run_cli, _make_result
+from ._runner import run_cli
 
 
 class InstaloaderTool(BaseTool):

@@ -1,4 +1,5 @@
 import pytest
+from unittest.mock import AsyncMock, patch
 from httpx import AsyncClient, ASGITransport
 from app.main import app
 from app.db.session import engine
@@ -12,6 +13,12 @@ async def setup_db():
     yield
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.fixture(autouse=True)
+def mock_runner():
+    with patch("app.api.v1.investigations.investigation_runner.run", new_callable=AsyncMock):
+        yield
 
 
 transport = ASGITransport(app=app)

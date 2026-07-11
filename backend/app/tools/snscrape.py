@@ -1,6 +1,5 @@
-import re
 from .base import BaseTool, ToolResult, ToolCategory
-from ._runner import run_cli, _make_result
+from ._runner import run_cli
 
 
 class SnscrapeTool(BaseTool):
@@ -11,7 +10,7 @@ class SnscrapeTool(BaseTool):
     async def run(self, target: str, **kwargs) -> ToolResult:
         platform = kwargs.get("platform", "twitter")
         result = await run_cli(self.name, self.category, [
-            "snscrape", f"--max-results", "20",
+            "snscrape", "--max-results", "20",
             f"{platform}-user", target,
         ], timeout=120)
 

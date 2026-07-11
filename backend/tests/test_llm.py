@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import patch, AsyncMock
+from unittest.mock import AsyncMock
 from app.llm.service import LLMService
 
 SAMPLE_DATA = {

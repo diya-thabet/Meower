@@ -92,13 +92,6 @@ class TestDispatcher:
         plan = PipelineBuilder().build("test@example.com", InvestigationType.EMAIL)
         dispatcher = Dispatcher()
 
-        mock_result = ToolResult(
-            tool_name="mock",
-            category=ToolCategory.EMAIL,
-            status="success",
-            raw_data={},
-        )
-
         with patch("app.orchestration.dispatcher.get_tool") as mock_get_tool:
             mock_tool = AsyncMock()
             mock_tool.run = AsyncMock(side_effect=RuntimeError("boom"))

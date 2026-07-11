@@ -1,4 +1,4 @@
-from .base import BaseTool, ToolResult, ToolCategory
+from .base import BaseTool, ToolResult, ToolCategory  # noqa: F401
 from .holehe import HoleheTool
 from .ghunt import GhuntTool
 from .h8mail import H8MailTool

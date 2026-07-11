@@ -2,7 +2,7 @@ import json
 import tempfile
 from pathlib import Path
 from .base import BaseTool, ToolResult, ToolCategory
-from ._runner import run_cli, _make_result
+from ._runner import run_cli
 
 
 class MaigretTool(BaseTool):

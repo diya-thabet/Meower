@@ -1,4 +1,3 @@
-import asyncio
 import pytest
 from unittest.mock import patch, AsyncMock, MagicMock
 from app.tools.base import ToolCategory
@@ -171,7 +170,8 @@ class TestSherlockTool:
 class TestMaigretTool:
     @pytest.mark.anyio
     async def test_run_parses_json_output(self):
-        import tempfile, json as j
+        import tempfile
+        import json as j
         from pathlib import Path
         tool = MaigretTool()
         mock_data = {
